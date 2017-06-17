@@ -5,10 +5,11 @@
 #include <QProcess>
 #include <QDebug>
 #include <QApplication>
+#include <QDir>
 
 Widget::Widget(QWidget *parent)
     : QWidget(parent),
-      m_image(100, 100, QImage::Format_ARGB32),
+      m_image(1404, 1872, QImage::Format_ARGB32),
       m_sharedMemory("sequrerender")
 {
     qDebug() << m_sharedMemory.nativeKey();
@@ -62,20 +63,44 @@ void Widget::onRunClicked()
         return;
     }
 
+    QDir dir(qApp->applicationDirPath() + "/../child/");
+    if (!dir.entryList().contains("sequrerender-child")) {
+        qWarning() << "Failed to find child executable";
+        return;
+    }
+
+    QProcess process;
+
     QStringList arguments;
     arguments << m_sharedMemory.key()
               << QString::number(m_image.width())
               << QString::number(m_image.height());
-    QProcess process;
-    process.setProcessChannelMode(QProcess::ForwardedChannels);
-    process.start("/home/sandsmark/src/sequrerender-child/build-sequrerender-child-Qt_with_clang-Debug/sequrerender-child", arguments);
+    process.setArguments(arguments);
 
-    if (!process.waitForFinished(10000)) {
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert("LD_LIBRARY_PATH", "/home/sandsmark/src/pdfium-qmake/build-pdfium-Qt_with_clang-Debug"); // Add an environment variable
+    process.setProcessEnvironment(env);
+
+    process.setProcessChannelMode(QProcess::ForwardedChannels);
+    process.setProgram(dir.absoluteFilePath("sequrerender-child"));
+
+    qDebug() << "Starting" << process.program() << process.arguments();
+
+    process.start();
+
+    if (!process.waitForFinished(100000)) {
+        qDebug() << "Timed out, trying to terminate";
         process.terminate();
         if (!process.waitForFinished(2000)) {
+        qDebug() << "Timed out, trying to kill";
             process.kill();
             process.waitForFinished(2000);
         }
+    }
+    qDebug() << process.exitCode();
+
+    if (process.error() != QProcess::UnknownError) {
+        qWarning() << process.errorString() << process.exitCode() << process.readAllStandardError() << process.readAllStandardOutput();
     }
 
     m_imageLabel->setPixmap(QPixmap::fromImage(m_image));

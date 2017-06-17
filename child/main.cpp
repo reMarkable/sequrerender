@@ -5,6 +5,12 @@
 #include <QTime>
 #include <seccomp.h>
 
+#include <fcntl.h>
+
+#include <fpdfview.h>
+
+#define ALLOW_SYSCALL(sysscall) if (!ret) ret = seccomp_rule_add(context, SCMP_ACT_ALLOW, SCMP_SYS(sysscall), 0);
+
 void lockDown()
 {
     scmp_filter_ctx context;
@@ -12,21 +18,53 @@ void lockDown()
     context = seccomp_init(SCMP_ACT_KILL);
 
     int ret = seccomp_rule_add(context, SCMP_ACT_ALLOW, SCMP_SYS(exit_group), 0);
-    if (!ret)
-        ret = seccomp_rule_add(context, SCMP_ACT_ALLOW, SCMP_SYS(write), 0);
-    if (!ret)
-        ret = seccomp_rule_add(context, SCMP_ACT_ALLOW, SCMP_SYS(semop), 0);
-    if (!ret)
-        ret = seccomp_rule_add(context, SCMP_ACT_ALLOW, SCMP_SYS(shmctl), 0);
-    if (!ret)
-        ret = seccomp_rule_add(context, SCMP_ACT_ALLOW, SCMP_SYS(shmget), 0);
-    if (!ret)
-        ret = seccomp_rule_add(context, SCMP_ACT_ALLOW, SCMP_SYS(shmdt), 0);
+
+    ALLOW_SYSCALL(brk       )
+    ALLOW_SYSCALL(exit_group)
+    ALLOW_SYSCALL(getpid    )
+    ALLOW_SYSCALL(mmap      )
+    ALLOW_SYSCALL(munmap    )
+    ALLOW_SYSCALL(open      )
+    ALLOW_SYSCALL(semop     )
+    ALLOW_SYSCALL(shmctl    )
+    ALLOW_SYSCALL(shmdt     )
+    ALLOW_SYSCALL(shmget    )
+
+    // Only allow writes to stderr (qDebug)
+    if (!ret) {
+            ret = seccomp_rule_add(context, SCMP_ACT_ALLOW, SCMP_SYS(write), 1,
+                            SCMP_CMP(0, SCMP_CMP_EQ, 2));
+    }
+
+    // Only allow reads from pdf file
+    if (!ret) {
+            ret = seccomp_rule_add(context, SCMP_ACT_ALLOW, SCMP_SYS(read), 1,
+                            SCMP_CMP(0, SCMP_CMP_EQ, 3));
+    }
+    // Only allow reads from pdf file
+    if (!ret) {
+            ret = seccomp_rule_add(context, SCMP_ACT_ALLOW, SCMP_SYS(lseek), 1,
+                            SCMP_CMP(0, SCMP_CMP_EQ, 3));
+    }
+    if (!ret) {
+            ret = seccomp_rule_add(context, SCMP_ACT_ALLOW, SCMP_SYS(fstat), 1,
+                            SCMP_CMP(0, SCMP_CMP_EQ, 3));
+    }
+
     if (!ret)
         ret = seccomp_load(context);
 
     if (ret)
         printf("error setting seccomp\n");
+}
+
+FPDF_DOCUMENT loadPdf(const QString &path)
+{
+    FPDF_DOCUMENT m_pdfDocument;
+    qDebug() << "Opening document";
+    m_pdfDocument = FPDF_LoadDocument(path.toLocal8Bit().constData(), nullptr);
+    qDebug() << "Document opened";
+    return m_pdfDocument;
 }
 
 int main(int argc, char *argv[])
@@ -42,6 +80,9 @@ int main(int argc, char *argv[])
     int width = QString::fromLocal8Bit(argv[2]).toInt();
     int height = QString::fromLocal8Bit(argv[3]).toInt();
 
+    QByteArray m_path = "/home/sandsmark/Downloads/Testweb_reMarkable.pdf";
+
+
     qDebug() << "Attaching to" << key;
 
     QSharedMemory sharedMemory(key);
@@ -50,19 +91,66 @@ int main(int argc, char *argv[])
         return 1;
     }
     qDebug() << "Attached";
+
+
+    FPDF_SetSandBoxPolicy(FPDF_POLICY_MACHINETIME_ACCESS, true);
+
+    FPDF_LIBRARY_CONFIG_ config;
+    config.version = 2;
+    config.m_pUserFontPaths = nullptr;
+    config.m_pIsolate = nullptr;
+    config.m_v8EmbedderSlot = 0;
+
+    qDebug() << "Initializing";
+    FPDF_InitLibraryWithConfig(&config);
+    qDebug() << "Initialized";
+
+
     lockDown();
+    qDebug() << "Locked down";
+
+    FPDF_DOCUMENT document = loadPdf(m_path);
+    if (!document) {
+        qWarning() << "Failed to load pdf";
+        sharedMemory.detach();
+        return 1;
+    }
+    int m_pageCount = FPDF_GetPageCount(document);
+    qDebug() << "page count" << m_pageCount;
 
     QImage image((uchar*)sharedMemory.data(), width, height, QImage::Format_ARGB32);
     qDebug() << "QImage created";
 
     if (image.byteCount() != sharedMemory.size()) {
         qWarning() << "Image data size" << image.byteCount() << "does not match shared memory size" << sharedMemory.size();
+        sharedMemory.detach();
         return 1;
     }
-    qDebug() << "Checked image size";
 
-    image.fill((Qt::GlobalColor)(qrand() % Qt::transparent));
+    image.fill(Qt::transparent);
+    // TODO: FPDF_QuickDrawPage?
+
+    FPDF_PAGE pdfPage = FPDF_LoadPage(document, 0);
+    if (!pdfPage) {
+        qWarning() << "Failed to load pdf page";
+        sharedMemory.detach();
+        return 1;
+    }
+
+    int renderFlags = FPDF_GRAYSCALE;
+    int pdfImageFormat = FPDFBitmap_Gray;
+
+    FPDF_BITMAP bitmap = FPDFBitmap_CreateEx(image.width(), image.height(),
+                                             pdfImageFormat,
+                                             image.scanLine(0),
+                                             image.bytesPerLine());
+    FPDF_RenderPageBitmap(bitmap, pdfPage, 0, 0, image.width(), image.height(), 0, renderFlags);
+    FPDFBitmap_Destroy(bitmap);
+    FPDF_ClosePage(pdfPage);
+
     qDebug() << "Image filled";
     sharedMemory.detach();
     qDebug() << "Image detached";
+
+    return 0;
 }
