@@ -19,16 +19,29 @@ void lockDown()
 
     int ret = seccomp_rule_add(context, SCMP_ACT_ALLOW, SCMP_SYS(exit_group), 0);
 
-    ALLOW_SYSCALL(brk       )
-    ALLOW_SYSCALL(exit_group)
-    ALLOW_SYSCALL(getpid    )
-    ALLOW_SYSCALL(mmap      )
-    ALLOW_SYSCALL(munmap    )
-    ALLOW_SYSCALL(open      )
-    ALLOW_SYSCALL(semop     )
-    ALLOW_SYSCALL(shmctl    )
-    ALLOW_SYSCALL(shmdt     )
-    ALLOW_SYSCALL(shmget    )
+    //ALLOW_SYSCALL(access         )
+    //ALLOW_SYSCALL(arch_prctl     )
+    ALLOW_SYSCALL(brk            )
+    ALLOW_SYSCALL(close          )
+    ALLOW_SYSCALL(exit_group     )
+    ALLOW_SYSCALL(fstat          )
+    ALLOW_SYSCALL(getpid         )
+    ALLOW_SYSCALL(getrlimit      )
+    ALLOW_SYSCALL(lseek          )
+    ALLOW_SYSCALL(mmap           )
+    //ALLOW_SYSCALL(mprotect       )
+    ALLOW_SYSCALL(munmap         )
+    //ALLOW_SYSCALL(pread64        )
+    //ALLOW_SYSCALL(read           )
+    ALLOW_SYSCALL(rt_sigaction   )
+    ALLOW_SYSCALL(rt_sigprocmask )
+    ALLOW_SYSCALL(semop          )
+    ALLOW_SYSCALL(set_robust_list)
+    ALLOW_SYSCALL(set_tid_address)
+    ALLOW_SYSCALL(shmctl         )
+    ALLOW_SYSCALL(shmdt          )
+    ALLOW_SYSCALL(shmget         )
+    //ALLOW_SYSCALL(write          )
 
     // Only allow writes to stderr (qDebug)
     if (!ret) {
@@ -50,12 +63,32 @@ void lockDown()
             ret = seccomp_rule_add(context, SCMP_ACT_ALLOW, SCMP_SYS(fstat), 1,
                             SCMP_CMP(0, SCMP_CMP_EQ, 3));
     }
+    if (!ret) {
+            ret = seccomp_rule_add(context, SCMP_ACT_ALLOW, SCMP_SYS(pread64), 1,
+                            SCMP_CMP(0, SCMP_CMP_EQ, 3));
+    }
 
     if (!ret)
         ret = seccomp_load(context);
 
     if (ret)
         printf("error setting seccomp\n");
+}
+
+static int s_readCallback(void* param,
+        unsigned long pos,
+        unsigned char* buf,
+        unsigned long size)
+{
+    QFile *inFile = static_cast<QFile*>(param);
+    if (pos != inFile->pos()) {
+        inFile->seek(pos);
+    }
+    if (inFile->read(buf, size) < 0) {
+        return 0
+    } else {
+        return 1;
+    }
 }
 
 FPDF_DOCUMENT loadPdf(const QString &path)
